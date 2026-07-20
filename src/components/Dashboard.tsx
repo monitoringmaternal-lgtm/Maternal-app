@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
-import { db } from '../firebase';
+import { useState, useEffect, useRef } from 'react';
+import { db, rtdb } from '../firebase';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { ref as rtdbRef, onValue } from 'firebase/database';
 import { SensorReading, AlertThresholds } from '../types';
 import {
   Thermometer,
@@ -11,7 +12,11 @@ import {
   AlertTriangle,
   Clock,
   Zap,
-  CheckCircle2
+  CheckCircle2,
+  Database,
+  Search,
+  Sliders,
+  Settings
 } from 'lucide-react';
 import {
   AreaChart,
@@ -23,23 +28,97 @@ import {
   ResponsiveContainer
 } from 'recharts';
 
+function parseRtdbData(val: any): SensorReading[] {
+  if (!val) return [];
+
+  // Format 1: Array of objects
+  if (Array.isArray(val)) {
+    return val
+      .filter(item => item && (typeof item.temperature === 'number' || typeof item.humidity === 'number' || typeof item.temp === 'number'))
+      .map((item, idx) => ({
+        id: item.id || `rtdb-arr-${idx}`,
+        temperature: typeof item.temperature === 'number' ? item.temperature : (typeof item.temp === 'number' ? item.temp : 25.0),
+        humidity: typeof item.humidity === 'number' ? item.humidity : (typeof item.humid === 'number' ? item.humid : 50.0),
+        voltage: typeof item.voltage === 'number' ? item.voltage : (typeof item.volt === 'number' ? item.volt : 4.0),
+        deviceId: item.deviceId || item.device || 'ESP32-Node',
+        status: item.status || 'Normal',
+        timestamp: item.timestamp ? new Date(item.timestamp) : new Date()
+      }));
+  }
+
+  // Format 2: Primitive or string
+  if (typeof val !== 'object') {
+    return [];
+  }
+
+  // Format 3: Single flat reading object (has temperature or humidity directly as key)
+  const hasDirectMetrics = ('temperature' in val && typeof val.temperature === 'number') || 
+                           ('humidity' in val && typeof val.humidity === 'number') ||
+                           ('temp' in val && typeof val.temp === 'number') ||
+                           ('humid' in val && typeof val.humid === 'number');
+
+  // Let's check if there are nested objects (like a map of push nodes)
+  const keys = Object.keys(val);
+  const hasNestedObjects = keys.some(k => val[k] && typeof val[k] === 'object' && !Array.isArray(val[k]));
+
+  if (hasDirectMetrics && !hasNestedObjects) {
+    return [{
+      id: val.id || 'rtdb-single',
+      temperature: typeof val.temperature === 'number' ? val.temperature : (typeof val.temp === 'number' ? val.temp : 25.0),
+      humidity: typeof val.humidity === 'number' ? val.humidity : (typeof val.humid === 'number' ? val.humid : 50.0),
+      voltage: typeof val.voltage === 'number' ? val.voltage : (typeof val.volt === 'number' ? val.volt : 4.0),
+      deviceId: val.deviceId || val.device || 'ESP32-Node',
+      status: val.status || 'Normal',
+      timestamp: val.timestamp ? new Date(val.timestamp) : new Date()
+    }];
+  }
+
+  // Format 4: Map of records (e.g., pushed with unique keys like -OB-hK4v9...)
+  const list: SensorReading[] = [];
+  keys.forEach(key => {
+    const item = val[key];
+    if (item && typeof item === 'object') {
+      list.push({
+        id: key,
+        temperature: typeof item.temperature === 'number' ? item.temperature : (typeof item.temp === 'number' ? item.temp : 25.0),
+        humidity: typeof item.humidity === 'number' ? item.humidity : (typeof item.humid === 'number' ? item.humid : 50.0),
+        voltage: typeof item.voltage === 'number' ? item.voltage : (typeof item.volt === 'number' ? item.volt : 4.0),
+        deviceId: item.deviceId || item.device || 'ESP32-Node',
+        status: item.status || 'Normal',
+        timestamp: item.timestamp ? new Date(item.timestamp) : new Date()
+      });
+    }
+  });
+
+  // Sort by timestamp descending
+  return list.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+}
+
 interface DashboardProps {
   thresholds: AlertThresholds;
   userId: string;
-  dbMode: 'firebase' | 'local';
 }
 
-export default function Dashboard({ thresholds, userId, dbMode }: DashboardProps) {
+export default function Dashboard({ thresholds, userId }: DashboardProps) {
   const [readings, setReadings] = useState<SensorReading[]>([]);
   const [latest, setLatest] = useState<SensorReading | null>(null);
   const [chartMetric, setChartMetric] = useState<'temperature' | 'humidity' | 'voltage'>('temperature');
   const [recordLimit, setRecordLimit] = useState<number>(20);
   const [loading, setLoading] = useState<boolean>(true);
+  
+  const [dataSource, setDataSource] = useState<'rtdb' | 'firestore'>(() => {
+    return (localStorage.getItem('esp32_data_source') as 'rtdb' | 'firestore') || 'rtdb';
+  });
+  const [rtdbPath, setRtdbPath] = useState<string>(() => {
+    return localStorage.getItem('esp32_rtdb_path') || '/sensor_readings';
+  });
+  const [accumulatedReadings, setAccumulatedReadings] = useState<SensorReading[]>([]);
 
   useEffect(() => {
     if (!userId) return;
+    setLoading(true);
     
-    if (dbMode === 'firebase') {
+    if (dataSource === 'firestore') {
       // Listen to Firestore for sensor readings in real-time
       const readingsCol = collection(db, 'users', userId, 'sensor_readings');
       const q = query(readingsCol, orderBy('timestamp', 'desc'), limit(recordLimit));
@@ -62,6 +141,8 @@ export default function Dashboard({ thresholds, userId, dbMode }: DashboardProps
         setReadings(data);
         if (data.length > 0) {
           setLatest(data[0]);
+        } else {
+          setLatest(null);
         }
         setLoading(false);
       }, (error) => {
@@ -71,33 +152,71 @@ export default function Dashboard({ thresholds, userId, dbMode }: DashboardProps
 
       return () => unsubscribe();
     } else {
-      // Local Database listener
-      const loadLocalReadings = () => {
-        const localReadings = JSON.parse(localStorage.getItem(`esp32_local_readings_${userId}`) || '[]');
-        const formatted = localReadings.map((r: any) => ({
-          ...r,
-          timestamp: r.timestamp ? new Date(r.timestamp) : new Date()
-        })).slice(0, recordLimit);
+      // Listen to Realtime Database in real-time
+      const cleanPath = rtdbPath.trim() || '/';
+      const rtdbRefPath = rtdbRef(rtdb, cleanPath);
 
-        setReadings(formatted);
-        if (formatted.length > 0) {
-          setLatest(formatted[0]);
+      const unsubscribeRtdb = onValue(rtdbRefPath, (snapshot) => {
+        const val = snapshot.val();
+        const parsed = parseRtdbData(val);
+
+        if (parsed.length === 1 && parsed[0].id === 'rtdb-single') {
+          // It's a single live telemetry point! Accumulate it so we have chart trends
+          setAccumulatedReadings(prev => {
+            const last = prev[0];
+            // Only add if we don't have it yet or if values changed
+            const isDuplicate = last && 
+              last.temperature === parsed[0].temperature && 
+              last.humidity === parsed[0].humidity && 
+              last.voltage === parsed[0].voltage;
+            
+            if (isDuplicate) {
+              return prev;
+            }
+            const updated = [parsed[0], ...prev];
+            return updated.slice(0, recordLimit);
+          });
+        } else if (parsed.length > 0) {
+          // It's a list or map of points! No need to accumulate
+          setReadings(parsed.slice(0, recordLimit));
+          setLatest(parsed[0]);
         } else {
+          setReadings([]);
           setLatest(null);
         }
         setLoading(false);
-      };
+      }, (error) => {
+        console.error("RTDB real-time subscription error: ", error);
+        setLoading(false);
+      });
 
-      // Load initially
-      loadLocalReadings();
-
-      // Setup window event listener for real-time reactivity
-      window.addEventListener('esp32_local_db_update', loadLocalReadings);
-      return () => {
-        window.removeEventListener('esp32_local_db_update', loadLocalReadings);
-      };
+      return () => unsubscribeRtdb();
     }
-  }, [recordLimit, userId, dbMode]);
+  }, [recordLimit, userId, dataSource, rtdbPath]);
+
+  // When accumulated readings change, update active readings in state if in single-item mode
+  useEffect(() => {
+    if (dataSource === 'rtdb' && accumulatedReadings.length > 0) {
+      setReadings(accumulatedReadings);
+      setLatest(accumulatedReadings[0]);
+    }
+  }, [accumulatedReadings, dataSource]);
+
+  const handleDataSourceChange = (source: 'rtdb' | 'firestore') => {
+    setDataSource(source);
+    localStorage.setItem('esp32_data_source', source);
+    setReadings([]);
+    setLatest(null);
+    setAccumulatedReadings([]);
+  };
+
+  const handleRtdbPathChange = (path: string) => {
+    setRtdbPath(path);
+    localStorage.setItem('esp32_rtdb_path', path);
+    setReadings([]);
+    setLatest(null);
+    setAccumulatedReadings([]);
+  };
 
   // Check if current values violate limits
   const isTempAlert = latest ? (latest.temperature > thresholds.tempMax || latest.temperature < thresholds.tempMin) : false;
@@ -145,6 +264,111 @@ export default function Dashboard({ thresholds, userId, dbMode }: DashboardProps
 
   return (
     <div className="space-y-6">
+      {/* Database Integration Controls */}
+      <div id="database-integration-controls" className="bg-slate-50 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+              <Database className="h-4.5 w-4.5 text-cyan-500" />
+              Active Telemetry Database
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Select the Firebase service and node path where your physical ESP32 or the hardware simulator is writing.
+            </p>
+          </div>
+
+          <div className="flex bg-slate-200/60 dark:bg-slate-800 p-1 rounded-xl self-start sm:self-auto">
+            <button
+              id="btn-source-rtdb"
+              onClick={() => handleDataSourceChange('rtdb')}
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 ${
+                dataSource === 'rtdb'
+                  ? 'bg-cyan-500 text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100'
+              }`}
+            >
+              <Zap className="h-3.5 w-3.5" />
+              Realtime Database ⚡
+            </button>
+            <button
+              id="btn-source-firestore"
+              onClick={() => handleDataSourceChange('firestore')}
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 ${
+                dataSource === 'firestore'
+                  ? 'bg-indigo-500 text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-800 dark:hover:text-slate-100'
+              }`}
+            >
+              <Database className="h-3.5 w-3.5" />
+              Cloud Firestore ☁️
+            </button>
+          </div>
+        </div>
+
+        {/* Database Configuration Info */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-slate-200/50 dark:border-slate-800">
+          <div className="bg-white dark:bg-[#1e293b] p-3 rounded-2xl border border-slate-100 dark:border-slate-800 text-[11px] space-y-1">
+            <span className="text-slate-400 block font-semibold uppercase tracking-wider text-[9px]">Target Project ID</span>
+            <span className="font-mono text-slate-700 dark:text-slate-200 break-all font-semibold">gen-lang-client-0469186857</span>
+          </div>
+          <div className="bg-white dark:bg-[#1e293b] p-3 rounded-2xl border border-slate-100 dark:border-slate-800 text-[11px] space-y-1">
+            <span className="text-slate-400 block font-semibold uppercase tracking-wider text-[9px]">Realtime DB URL</span>
+            <span className="font-mono text-slate-700 dark:text-slate-200 break-all font-semibold">https://gen-lang-client-0469186857-default-rtdb.firebaseio.com/</span>
+          </div>
+        </div>
+
+        {dataSource === 'rtdb' && (
+          <div className="bg-white dark:bg-[#1e293b] p-4 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <label htmlFor="rtdb-path-input" className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                Listening RTDB Node Path:
+              </label>
+              <span className="text-[10px] text-cyan-500 font-mono font-bold bg-cyan-500/10 px-2 py-0.5 rounded-full animate-pulse">
+                LIVE LISTENING
+              </span>
+            </div>
+            
+            <div className="flex gap-2">
+              <input
+                id="rtdb-path-input"
+                type="text"
+                value={rtdbPath}
+                onChange={(e) => handleRtdbPathChange(e.target.value)}
+                placeholder="/sensor_readings"
+                className="flex-1 text-sm font-mono px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0f172a] text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              />
+            </div>
+
+            {/* Path presets */}
+            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              <span className="text-[10px] font-semibold text-slate-400 uppercase mr-1">Quick Select Path:</span>
+              {[
+                { name: 'Pushed Records List', path: '/sensor_readings' },
+                { name: 'Flat Latest State', path: '/latest' },
+                { name: 'Telemetry Root', path: '/telemetry' },
+                { name: 'Database Root', path: '/' }
+              ].map((preset) => (
+                <button
+                  key={preset.path}
+                  onClick={() => handleRtdbPathChange(preset.path)}
+                  className={`text-[10px] px-2.5 py-1 rounded-lg border font-mono transition-all ${
+                    rtdbPath === preset.path
+                      ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/30 font-bold'
+                      : 'bg-slate-50 dark:bg-[#0f172a] text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 border-slate-100 dark:border-slate-800'
+                  }`}
+                >
+                  {preset.path} ({preset.name})
+                </button>
+              ))}
+            </div>
+            
+            <p className="text-[10px] text-slate-400 leading-relaxed pt-1 border-t border-dashed border-slate-100 dark:border-slate-800/80">
+              💡 <b>Tip:</b> If your ESP32 uses <code>firebase.push("/sensor_readings", data)</code>, select <b>/sensor_readings</b>. If your code overwrites a single variable with <code>firebase.set("/latest", data)</code>, select <b>/latest</b> (the graph will dynamically accumulate points as new measurements stream in).
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* Real-time Telemetry Status Banner */}
       {loading ? (
         <div className="flex items-center justify-center h-20 bg-slate-50 dark:bg-slate-850 rounded-2xl animate-pulse">

@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
+import { getDatabase } from 'firebase/database';
 
 const firebaseConfig = {
   apiKey: "AIzaSyAwl8dB6LeI6GkTniQ91Y3K4x5OKTH_cmI",
@@ -8,7 +9,8 @@ const firebaseConfig = {
   projectId: "gen-lang-client-0469186857",
   storageBucket: "gen-lang-client-0469186857.firebasestorage.app",
   messagingSenderId: "331433534538",
-  appId: "1:331433534538:web:003a6f3ef707a3b99032b3"
+  appId: "1:331433534538:web:003a6f3ef707a3b99032b3",
+  databaseURL: "https://gen-lang-client-0469186857-default-rtdb.firebaseio.com/"
 };
 
 const app = initializeApp(firebaseConfig);
@@ -17,4 +19,6 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, "ai-studio-ffdf5d1c-74b9-42f5-94a7-5b52946fd3d2");
 
 export const auth = getAuth(app);
+
+export const rtdb = getDatabase(app);
 

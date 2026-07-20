@@ -8,11 +8,10 @@ import { UserProfile } from '../types';
 interface ProfileProps {
   profile: UserProfile;
   onProfileUpdate: (updatedProfile: UserProfile) => void;
-  dbMode: 'firebase' | 'local';
   onLogout: () => void;
 }
 
-export default function Profile({ profile, onProfileUpdate, dbMode, onLogout }: ProfileProps) {
+export default function Profile({ profile, onProfileUpdate, onLogout }: ProfileProps) {
   const [username, setUsername] = useState<string>(profile.username);
   const [saving, setSaving] = useState<boolean>(false);
   const [success, setSuccess] = useState<boolean>(false);
@@ -24,20 +23,10 @@ export default function Profile({ profile, onProfileUpdate, dbMode, onLogout }: 
     setSuccess(false);
 
     try {
-      if (dbMode === 'firebase') {
-        const userRef = doc(db, 'users', profile.uid);
-        await updateDoc(userRef, {
-          username: username.trim()
-        });
-      } else {
-        const localProfileStr = localStorage.getItem(`esp32_local_profile_${profile.uid}`);
-        if (localProfileStr) {
-          const prof = JSON.parse(localProfileStr);
-          prof.username = username.trim();
-          localStorage.setItem(`esp32_local_profile_${profile.uid}`, JSON.stringify(prof));
-        }
-        window.dispatchEvent(new Event('esp32_local_db_update'));
-      }
+      const userRef = doc(db, 'users', profile.uid);
+      await updateDoc(userRef, {
+        username: username.trim()
+      });
       onProfileUpdate({
         ...profile,
         username: username.trim()
@@ -60,21 +49,11 @@ export default function Profile({ profile, onProfileUpdate, dbMode, onLogout }: 
         darkMode: nextMode
       });
       
-      if (dbMode === 'firebase') {
-        // Save setting to Firestore
-        const userRef = doc(db, 'users', profile.uid);
-        await updateDoc(userRef, {
-          darkMode: nextMode
-        });
-      } else {
-        const localProfileStr = localStorage.getItem(`esp32_local_profile_${profile.uid}`);
-        if (localProfileStr) {
-          const prof = JSON.parse(localProfileStr);
-          prof.darkMode = nextMode;
-          localStorage.setItem(`esp32_local_profile_${profile.uid}`, JSON.stringify(prof));
-        }
-        window.dispatchEvent(new Event('esp32_local_db_update'));
-      }
+      // Save setting to Firestore
+      const userRef = doc(db, 'users', profile.uid);
+      await updateDoc(userRef, {
+        darkMode: nextMode
+      });
     } catch (err) {
       console.error("Error toggling dark mode in DB: ", err);
     }
@@ -82,12 +61,7 @@ export default function Profile({ profile, onProfileUpdate, dbMode, onLogout }: 
 
   const handleLogout = async () => {
     try {
-      if (dbMode === 'firebase') {
-        await signOut(auth);
-      } else {
-        localStorage.removeItem('esp32_local_session');
-        onLogout();
-      }
+      await signOut(auth);
     } catch (err) {
       console.error("Error signing out operator: ", err);
     }

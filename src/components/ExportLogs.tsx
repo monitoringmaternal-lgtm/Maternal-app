@@ -6,10 +6,9 @@ import { Download, FileSpreadsheet, RefreshCw, Filter, Calendar, Activity, Datab
 
 interface ExportLogsProps {
   userId: string;
-  dbMode: 'firebase' | 'local';
 }
 
-export default function ExportLogs({ userId, dbMode }: ExportLogsProps) {
+export default function ExportLogs({ userId }: ExportLogsProps) {
   const [logs, setLogs] = useState<SensorReading[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [filterDevice, setFilterDevice] = useState<string>('All');
@@ -20,33 +19,24 @@ export default function ExportLogs({ userId, dbMode }: ExportLogsProps) {
     if (!userId) return;
     setLoading(true);
     try {
-      if (dbMode === 'firebase') {
-        const readingsCol = collection(db, 'users', userId, 'sensor_readings');
-        const q = query(readingsCol, orderBy('timestamp', 'desc'), limit(maxLogs));
-        const querySnapshot = await getDocs(q);
-        
-        const fetchedLogs: SensorReading[] = [];
-        querySnapshot.forEach((doc) => {
-          const item = doc.data();
-          fetchedLogs.push({
-            id: doc.id,
-            temperature: item.temperature,
-            humidity: item.humidity,
-            voltage: item.voltage,
-            deviceId: item.deviceId || 'ESP32',
-            status: item.status || 'Normal',
-            timestamp: item.timestamp ? item.timestamp.toDate() : new Date()
-          });
+      const readingsCol = collection(db, 'users', userId, 'sensor_readings');
+      const q = query(readingsCol, orderBy('timestamp', 'desc'), limit(maxLogs));
+      const querySnapshot = await getDocs(q);
+      
+      const fetchedLogs: SensorReading[] = [];
+      querySnapshot.forEach((doc) => {
+        const item = doc.data();
+        fetchedLogs.push({
+          id: doc.id,
+          temperature: item.temperature,
+          humidity: item.humidity,
+          voltage: item.voltage,
+          deviceId: item.deviceId || 'ESP32',
+          status: item.status || 'Normal',
+          timestamp: item.timestamp ? item.timestamp.toDate() : new Date()
         });
-        setLogs(fetchedLogs);
-      } else {
-        const localReadings = JSON.parse(localStorage.getItem(`esp32_local_readings_${userId}`) || '[]');
-        const formatted = localReadings.map((r: any) => ({
-          ...r,
-          timestamp: r.timestamp ? new Date(r.timestamp) : new Date()
-        })).slice(0, maxLogs);
-        setLogs(formatted);
-      }
+      });
+      setLogs(fetchedLogs);
     } catch (e) {
       console.error("Error fetching logs for export: ", e);
     } finally {
@@ -56,14 +46,7 @@ export default function ExportLogs({ userId, dbMode }: ExportLogsProps) {
 
   useEffect(() => {
     fetchLogs();
-
-    if (dbMode === 'local') {
-      window.addEventListener('esp32_local_db_update', fetchLogs);
-      return () => {
-        window.removeEventListener('esp32_local_db_update', fetchLogs);
-      };
-    }
-  }, [maxLogs, userId, dbMode]);
+  }, [maxLogs, userId]);
 
   // List unique devices for filtering
   const devices = ['All', ...new Set(logs.map(log => log.deviceId))];

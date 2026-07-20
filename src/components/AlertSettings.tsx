@@ -7,11 +7,10 @@ import { Bell, ShieldAlert, Thermometer, Droplets, Battery, Save, RefreshCw, Che
 interface AlertSettingsProps {
   userId: string;
   currentThresholds: AlertThresholds;
-  dbMode: 'firebase' | 'local';
   onUpdate: (newThresholds: AlertThresholds) => void;
 }
 
-export default function AlertSettings({ userId, currentThresholds, dbMode, onUpdate }: AlertSettingsProps) {
+export default function AlertSettings({ userId, currentThresholds, onUpdate }: AlertSettingsProps) {
   const [tempMax, setTempMax] = useState<number>(currentThresholds.tempMax);
   const [tempMin, setTempMin] = useState<number>(currentThresholds.tempMin);
   const [humidityMax, setHumidityMax] = useState<number>(currentThresholds.humidityMax);
@@ -37,20 +36,10 @@ export default function AlertSettings({ userId, currentThresholds, dbMode, onUpd
     };
 
     try {
-      if (dbMode === 'firebase') {
-        const userRef = doc(db, 'users', userId);
-        await updateDoc(userRef, {
-          alertSettings: updated
-        });
-      } else {
-        const localProfileStr = localStorage.getItem(`esp32_local_profile_${userId}`);
-        if (localProfileStr) {
-          const profile = JSON.parse(localProfileStr);
-          profile.alertSettings = updated;
-          localStorage.setItem(`esp32_local_profile_${userId}`, JSON.stringify(profile));
-        }
-        window.dispatchEvent(new Event('esp32_local_db_update'));
-      }
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, {
+        alertSettings: updated
+      });
       onUpdate(updated);
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);

@@ -10,7 +10,6 @@ import {
   Settings2,
   User,
   Shield,
-  Smartphone,
   Info,
   X,
   Volume2,
@@ -25,7 +24,6 @@ import AlertsList from './components/AlertsList';
 import ExportLogs from './components/ExportLogs';
 import AlertSettings from './components/AlertSettings';
 import Profile from './components/Profile';
-import ESP32Simulator from './components/ESP32Simulator';
 
 interface InAppToast {
   id: string;
@@ -34,9 +32,6 @@ interface InAppToast {
 }
 
 export default function App() {
-  const [dbMode, setDbMode] = useState<'firebase' | 'local'>(() => {
-    return (localStorage.getItem('esp32_db_mode') as 'firebase' | 'local') || 'firebase';
-  });
   const [user, setUser] = useState<any>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
@@ -46,111 +41,63 @@ export default function App() {
 
   // Initialize Auth state listener
   useEffect(() => {
-    if (dbMode === 'firebase') {
-      const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-        setUser(firebaseUser);
-        if (!firebaseUser) {
-          setProfile(null);
-          setAuthLoading(false);
-        }
-      });
-      return () => unsubscribe();
-    } else {
-      // Local Database Mode: check localStorage session
-      const storedLocalUser = localStorage.getItem('esp32_local_session');
-      if (storedLocalUser) {
-        setUser(JSON.parse(storedLocalUser));
-      } else {
-        setUser(null);
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      if (!firebaseUser) {
         setProfile(null);
+        setAuthLoading(false);
       }
-      setAuthLoading(false);
-    }
-  }, [dbMode]);
+    });
+    return () => unsubscribe();
+  }, []);
 
-  // Listen to User Profile (Firestore in Cloud mode, localStorage in Local mode)
+  // Listen to User Profile (Firestore)
   useEffect(() => {
     if (!user) return;
 
-    if (dbMode === 'firebase') {
-      const userDocRef = doc(db, 'users', user.uid);
-      const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          setProfile({
-            uid: user.uid,
-            email: data.email || user.email || 'operator@system.io',
-            username: data.username || 'ESP32 Operator',
-            alertSettings: data.alertSettings || {
-              tempMax: 38.0,
-              tempMin: 15.0,
-              humidityMax: 75.0,
-              humidityMin: 25.0,
-              voltageMin: 3.3,
-              voltageMax: 4.7
-            },
-            darkMode: data.darkMode || false
-          });
-        } else {
-          // Fallback profile if Firestore is still bootstrapping
-          setProfile({
-            uid: user.uid,
-            email: user.email || 'operator@system.io',
-            username: 'ESP32 Operator',
-            alertSettings: {
-              tempMax: 38.0,
-              tempMin: 15.0,
-              humidityMax: 75.0,
-              humidityMin: 25.0,
-              voltageMin: 3.3,
-              voltageMax: 4.7
-            },
-            darkMode: false
-          });
-        }
-        setAuthLoading(false);
-      }, (error) => {
-        console.error("Error listening to user profile:", error);
-        setAuthLoading(false);
-      });
+    const userDocRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setProfile({
+          uid: user.uid,
+          email: data.email || user.email || 'operator@system.io',
+          username: data.username || 'ESP32 Operator',
+          alertSettings: data.alertSettings || {
+            tempMax: 38.0,
+            tempMin: 15.0,
+            humidityMax: 75.0,
+            humidityMin: 25.0,
+            voltageMin: 3.3,
+            voltageMax: 4.7
+          },
+          darkMode: data.darkMode || false
+        });
+      } else {
+        // Fallback profile if Firestore is still bootstrapping
+        setProfile({
+          uid: user.uid,
+          email: user.email || 'operator@system.io',
+          username: 'ESP32 Operator',
+          alertSettings: {
+            tempMax: 38.0,
+            tempMin: 15.0,
+            humidityMax: 75.0,
+            humidityMin: 25.0,
+            voltageMin: 3.3,
+            voltageMax: 4.7
+          },
+          darkMode: false
+        });
+      }
+      setAuthLoading(false);
+    }, (error) => {
+      console.error("Error listening to user profile:", error);
+      setAuthLoading(false);
+    });
 
-      return () => unsubscribe();
-    } else {
-      // Local mode profile loading & sync
-      const loadLocalProfile = () => {
-        const localProfileStr = localStorage.getItem(`esp32_local_profile_${user.uid}`);
-        if (localProfileStr) {
-          setProfile(JSON.parse(localProfileStr));
-        } else {
-          const defaultProfile: UserProfile = {
-            uid: user.uid,
-            email: user.email || 'operator@local.io',
-            username: 'Local Operator',
-            alertSettings: {
-              tempMax: 38.0,
-              tempMin: 15.0,
-              humidityMax: 75.0,
-              humidityMin: 25.0,
-              voltageMin: 3.3,
-              voltageMax: 4.7
-            },
-            darkMode: false
-          };
-          localStorage.setItem(`esp32_local_profile_${user.uid}`, JSON.stringify(defaultProfile));
-          setProfile(defaultProfile);
-        }
-        setAuthLoading(false);
-      };
-
-      loadLocalProfile();
-
-      // Keep in sync with local simulation/settings updates via the custom event
-      window.addEventListener('esp32_local_db_update', loadLocalProfile);
-      return () => {
-        window.removeEventListener('esp32_local_db_update', loadLocalProfile);
-      };
-    }
-  }, [user, dbMode]);
+    return () => unsubscribe();
+  }, [user]);
 
   // Apply dark mode class to HTML element
   useEffect(() => {
@@ -216,15 +163,7 @@ export default function App() {
   const activeThresholds = profile?.alertSettings || defaultThresholds;
 
   const handleAuthSuccess = (uid: string) => {
-    if (dbMode === 'local') {
-      const storedLocalUser = localStorage.getItem('esp32_local_session');
-      if (storedLocalUser) {
-        setUser(JSON.parse(storedLocalUser));
-      }
-    } else {
-      // Auth state is handled in standard listener, just safety update loading
-      setAuthLoading(true);
-    }
+    setAuthLoading(true);
   };
 
   return (
@@ -257,7 +196,7 @@ export default function App() {
         ))}
       </div>
 
-      {/* Main Responsive Grid Layout */}
+      {/* Main Responsive Layout */}
       <div className="max-w-7xl mx-auto px-4 py-6 lg:py-10">
         
         {/* App Title Header Banner */}
@@ -267,10 +206,10 @@ export default function App() {
               <div className="h-8 w-8 bg-cyan-500 text-white rounded-lg flex items-center justify-center shadow-md shadow-cyan-500/10">
                 <Shield className="h-5 w-5" />
               </div>
-              <h1 className="text-xl font-extrabold tracking-tight text-slate-850 dark:text-slate-50">ESP32 Telemetric Gateway</h1>
+              <h1 className="text-xl font-extrabold tracking-tight text-slate-850 dark:text-slate-50">ESP32 Real-Time Telemetry Monitor</h1>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              Industrial real-time sensor processing and safe operational boundary monitoring.
+              Industrial remote monitoring workspace connected to Firebase database & real-time sensor streams.
             </p>
           </div>
 
@@ -285,218 +224,149 @@ export default function App() {
             </button>
 
             {profile && (
-              <span className={`text-[11px] font-mono font-bold border px-3 py-1.5 rounded-xl flex items-center gap-1.5 ${
-                dbMode === 'firebase'
-                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400'
-                  : 'bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400'
-              }`}>
-                <span className={`inline-block h-1.5 w-1.5 rounded-full animate-pulse ${
-                  dbMode === 'firebase' ? 'bg-emerald-400' : 'bg-amber-400'
-                }`}></span>
-                {dbMode === 'firebase' ? 'Firebase Cloud Active' : 'Local Sandbox Active'}
+              <span className="text-[11px] font-mono font-bold border px-3 py-1.5 rounded-xl flex items-center gap-1.5 bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                <span className="inline-block h-1.5 w-1.5 rounded-full animate-pulse bg-emerald-400"></span>
+                Firebase Cloud Active
               </span>
             )}
           </div>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          
-          {/* LEFT PANEL: Mobile Phone Simulated Viewport */}
-          <div className="lg:col-span-7 flex justify-center">
+        {authLoading ? (
+          <div className="flex flex-col items-center justify-center min-h-[400px] gap-2">
+            <div className="h-8 w-8 border-3 border-cyan-500 border-t-transparent rounded-full animate-spin"></div>
+            <span className="text-xs font-semibold text-slate-400">Restoring operational credentials...</span>
+          </div>
+        ) : !user ? (
+          <div className="flex items-center justify-center min-h-[450px]">
+            <div className="w-full max-w-md">
+              <Auth onSuccess={handleAuthSuccess} />
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-6 animate-fade-in">
             
-            {/* Standard Mobile Frame */}
-            <div className="w-full max-w-[430px] bg-[#1e293b] dark:bg-[#1e293b] p-3 sm:p-4 rounded-[42px] shadow-2xl border-4 border-[#0f172a] flex flex-col relative aspect-[9/19.5] min-h-[780px] overflow-hidden shadow-cyan-500/5">
+            {/* Elegant Sub-Navigation Tab Row */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white dark:bg-[#1e293b] border border-slate-200/50 dark:border-slate-850 p-2.5 rounded-2xl shadow-sm">
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  id="nav-tab-dashboard"
+                  onClick={() => setActiveTab('dashboard')}
+                  className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl transition-all ${
+                    activeTab === 'dashboard'
+                      ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/10'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                  }`}
+                >
+                  <LayoutDashboard className="h-4 w-4" />
+                  <span>Telemetry Dashboard</span>
+                </button>
+
+                <button
+                  id="nav-tab-alerts"
+                  onClick={() => setActiveTab('alerts')}
+                  className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl transition-all ${
+                    activeTab === 'alerts'
+                      ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/10'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                  }`}
+                >
+                  <BellRing className="h-4 w-4" />
+                  <span>Safety Alerts</span>
+                </button>
+
+                <button
+                  id="nav-tab-export"
+                  onClick={() => setActiveTab('export')}
+                  className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl transition-all ${
+                    activeTab === 'export'
+                      ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/10'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                  }`}
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  <span>Telemetry Logs</span>
+                </button>
+
+                <button
+                  id="nav-tab-thresholds"
+                  onClick={() => setActiveTab('thresholds')}
+                  className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl transition-all ${
+                    activeTab === 'thresholds'
+                      ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/10'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                  }`}
+                >
+                  <Settings2 className="h-4 w-4" />
+                  <span>Threshold Rules</span>
+                </button>
+
+                <button
+                  id="nav-tab-profile"
+                  onClick={() => setActiveTab('profile')}
+                  className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl transition-all ${
+                    activeTab === 'profile'
+                      ? 'bg-cyan-500 text-white shadow-md shadow-cyan-500/10'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                  }`}
+                >
+                  <User className="h-4 w-4" />
+                  <span>Operator Profile</span>
+                </button>
+              </div>
+
+              {/* Operator details badge */}
+              {profile && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-750 rounded-xl text-[11px]">
+                  <div className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse"></div>
+                  <span className="text-slate-400">Operator:</span>
+                  <span className="font-bold text-slate-700 dark:text-slate-200">{profile.username}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Active View Panel (No narrow aspect restriction) */}
+            <div className="bg-white dark:bg-[#1e293b] border border-slate-200/60 dark:border-slate-800/60 rounded-3xl p-6 shadow-sm min-h-[520px]">
+              {activeTab === 'dashboard' && profile && (
+                <Dashboard thresholds={activeThresholds} userId={user.uid} />
+              )}
               
-              {/* Notch */}
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 w-28 h-5.5 bg-[#1e293b] rounded-full z-20 flex items-center justify-between px-3.5">
-                <span className="h-1.5 w-1.5 bg-cyan-400/80 rounded-full animate-ping"></span>
-                <span className="w-12 h-1 bg-slate-800 rounded-full"></span>
-                <span className="h-1.5 w-1.5 bg-cyan-500/30 rounded-full"></span>
-              </div>
-
-              {/* Inner Mobile Screen Content Area */}
-              <div className="flex-1 bg-slate-50 dark:bg-[#0f172a] rounded-[32px] overflow-hidden flex flex-col relative border border-slate-100 dark:border-slate-800/60">
-                
-                {/* Mobile Status Bar */}
-                <div className="bg-white dark:bg-[#1e293b] px-6 pt-6.5 pb-3 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center text-[10px] font-bold text-slate-400 dark:text-slate-400 font-mono">
-                  <span>SYSTEM_IO</span>
-                  <div className="flex items-center gap-1">
-                    <span>LTE</span>
-                    <span>100%</span>
-                  </div>
-                </div>
-
-                 {/* Main Scrollable Viewport */}
-                <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-                  {authLoading ? (
-                    <div className="flex flex-col items-center justify-center h-full gap-2">
-                      <div className="h-8 w-8 border-3 border-cyan-500 border-t-transparent rounded-full animate-spin"></div>
-                      <span className="text-xs font-semibold text-slate-400">Restoring operational credentials...</span>
-                    </div>
-                  ) : !user ? (
-                    <div className="flex items-center justify-center h-full py-6">
-                      <Auth
-                        onSuccess={handleAuthSuccess}
-                        dbMode={dbMode}
-                        setDbMode={(mode) => {
-                          setDbMode(mode);
-                          localStorage.setItem('esp32_db_mode', mode);
-                        }}
-                      />
-                    </div>
-                  ) : (
-                    <>
-                      {/* Sub-Views */}
-                      {activeTab === 'dashboard' && profile && (
-                        <Dashboard thresholds={activeThresholds} userId={user.uid} dbMode={dbMode} />
-                      )}
-                      
-                      {activeTab === 'alerts' && (
-                        <AlertsList userId={user.uid} dbMode={dbMode} />
-                      )}
-                      
-                      {activeTab === 'export' && (
-                        <ExportLogs userId={user.uid} dbMode={dbMode} />
-                      )}
-                      
-                      {activeTab === 'thresholds' && profile && (
-                        <AlertSettings
-                          userId={user.uid}
-                          dbMode={dbMode}
-                          currentThresholds={activeThresholds}
-                          onUpdate={(newThresholds) => {
-                            setProfile({
-                              ...profile,
-                              alertSettings: newThresholds
-                            });
-                          }}
-                        />
-                      )}
-                      
-                      {activeTab === 'profile' && profile && (
-                        <Profile
-                          profile={profile}
-                          dbMode={dbMode}
-                          onProfileUpdate={(updatedProfile) => {
-                            setProfile(updatedProfile);
-                          }}
-                          onLogout={() => {
-                            setUser(null);
-                            setProfile(null);
-                          }}
-                        />
-                      )}
-                    </>
-                  )}
-                </div>
-
-                {/* Bottom Navigation Tabs - Only show when authenticated */}
-                {user && profile && (
-                  <nav className="bg-white dark:bg-[#1e293b] border-t border-slate-150 dark:border-slate-800 px-4 py-3.5 flex justify-around items-center rounded-b-[32px] shrink-0 z-10">
-                    <button
-                      id="nav-tab-dashboard"
-                      onClick={() => setActiveTab('dashboard')}
-                      className={`flex flex-col items-center gap-1 text-[10px] font-bold transition-colors ${
-                        activeTab === 'dashboard'
-                          ? 'text-cyan-500 dark:text-cyan-400'
-                          : 'text-slate-400 dark:text-slate-500 hover:text-cyan-500'
-                      }`}
-                    >
-                      <LayoutDashboard className="h-4.5 w-4.5" />
-                      <span>Dashboard</span>
-                    </button>
-
-                    <button
-                      id="nav-tab-alerts"
-                      onClick={() => setActiveTab('alerts')}
-                      className={`flex flex-col items-center gap-1 text-[10px] font-bold transition-colors relative ${
-                        activeTab === 'alerts'
-                          ? 'text-cyan-500 dark:text-cyan-400'
-                          : 'text-slate-400 dark:text-slate-500 hover:text-cyan-500'
-                      }`}
-                    >
-                      <BellRing className="h-4.5 w-4.5" />
-                      <span>Alerts</span>
-                    </button>
-
-                    <button
-                      id="nav-tab-export"
-                      onClick={() => setActiveTab('export')}
-                      className={`flex flex-col items-center gap-1 text-[10px] font-bold transition-colors ${
-                        activeTab === 'export'
-                          ? 'text-cyan-500 dark:text-cyan-400'
-                          : 'text-slate-400 dark:text-slate-500 hover:text-cyan-500'
-                      }`}
-                    >
-                      <FileSpreadsheet className="h-4.5 w-4.5" />
-                      <span>Logs</span>
-                    </button>
-
-                    <button
-                      id="nav-tab-thresholds"
-                      onClick={() => setActiveTab('thresholds')}
-                      className={`flex flex-col items-center gap-1 text-[10px] font-bold transition-colors ${
-                        activeTab === 'thresholds'
-                          ? 'text-cyan-500 dark:text-cyan-400'
-                          : 'text-slate-400 dark:text-slate-500 hover:text-cyan-500'
-                      }`}
-                    >
-                      <Settings2 className="h-4.5 w-4.5" />
-                      <span>Alert Settings</span>
-                    </button>
-
-                    <button
-                      id="nav-tab-profile"
-                      onClick={() => setActiveTab('profile')}
-                      className={`flex flex-col items-center gap-1 text-[10px] font-bold transition-colors ${
-                        activeTab === 'profile'
-                          ? 'text-cyan-500 dark:text-cyan-400'
-                          : 'text-slate-400 dark:text-slate-500 hover:text-cyan-500'
-                      }`}
-                    >
-                      <User className="h-4.5 w-4.5" />
-                      <span>Profile</span>
-                    </button>
-                  </nav>
-                )}
-              </div>
+              {activeTab === 'alerts' && (
+                <AlertsList userId={user.uid} />
+              )}
+              
+              {activeTab === 'export' && (
+                <ExportLogs userId={user.uid} />
+              )}
+              
+              {activeTab === 'thresholds' && profile && (
+                <AlertSettings
+                  userId={user.uid}
+                  currentThresholds={activeThresholds}
+                  onUpdate={(newThresholds) => {
+                    setProfile({
+                      ...profile,
+                      alertSettings: newThresholds
+                    });
+                  }}
+                />
+              )}
+              
+              {activeTab === 'profile' && profile && (
+                <Profile
+                  profile={profile}
+                  onProfileUpdate={(updatedProfile) => {
+                    setProfile(updatedProfile);
+                  }}
+                  onLogout={() => {
+                    setUser(null);
+                    setProfile(null);
+                  }}
+                />
+              )}
             </div>
           </div>
-
-          {/* RIGHT PANEL: Hardware Simulator Console */}
-          <div className="lg:col-span-5 space-y-6 lg:sticky lg:top-6">
-            <ESP32Simulator
-              thresholds={activeThresholds}
-              userId={user?.uid}
-              dbMode={dbMode}
-              onAlertTriggered={(message, type) => {
-                addToast(message, type);
-              }}
-            />
-
-            {/* Quick documentation box */}
-            <div className="bg-slate-50 dark:bg-[#1e293b] border border-slate-200 dark:border-slate-700/50 p-5 rounded-2xl shadow-sm">
-              <h4 className="font-bold text-xs uppercase tracking-wide text-cyan-600 dark:text-cyan-400 flex items-center gap-1.5 mb-2">
-                <Info className="h-4 w-4 text-cyan-500" /> Quick Documentation
-              </h4>
-              <ul className="space-y-2 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                <li>
-                  <b>1. Set Safe Ranges</b>: Head to the <i>Alert Settings</i> tab inside the mobile screen to customize limits (e.g. Temp Max: 32°C).
-                </li>
-                <li>
-                  <b>2. Stream Live Data</b>: Click the green <b>Start Auto-Send</b> button on the simulator console to initiate live broadcasting to your Firestore database.
-                </li>
-                <li>
-                  <b>3. Watch Real-time Sync</b>: Telemetry readings will flow directly into the mobile dashboard without any page refresh.
-                </li>
-                <li>
-                  <b>4. Trigger Buzzer Warnings</b>: Slide Temperature or Voltage limits beyond your custom settings to hear a warning tone and receive alert banners in real-time.
-                </li>
-              </ul>
-            </div>
-          </div>
-
-        </div>
+        )}
       </div>
     </div>
   );
