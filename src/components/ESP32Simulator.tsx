@@ -7,10 +7,11 @@ import { AlertThresholds } from '../types';
 interface ESP32SimulatorProps {
   thresholds: AlertThresholds;
   userId?: string;
+  dbMode?: 'firebase' | 'local';
   onAlertTriggered: (alertMessage: string, type: string) => void;
 }
 
-export default function ESP32Simulator({ thresholds, userId, onAlertTriggered }: ESP32SimulatorProps) {
+export default function ESP32Simulator({ thresholds, userId, dbMode = 'firebase', onAlertTriggered }: ESP32SimulatorProps) {
   const [temperature, setTemperature] = useState<number>(24.5);
   const [humidity, setHumidity] = useState<number>(45.0);
   const [voltage, setVoltage] = useState<number>(4.2);
@@ -50,7 +51,7 @@ export default function ESP32Simulator({ thresholds, userId, onAlertTriggered }:
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [isSimulating, intervalSec, temperature, humidity, voltage, deviceId, thresholds, userId]);
+  }, [isSimulating, intervalSec, temperature, humidity, voltage, deviceId, thresholds, userId, dbMode]);
 
   const sendTelemetry = async () => {
     setIsSending(true);
@@ -85,15 +86,42 @@ export default function ESP32Simulator({ thresholds, userId, onAlertTriggered }:
 
       const hasAlert = alerts.length > 0;
 
-      // Add sensor reading
-      await addDoc(collection(db, 'sensor_readings'), {
-        temperature,
-        humidity,
-        voltage,
-        deviceId,
-        status: hasAlert ? 'Alert' : 'Normal',
-        timestamp: serverTimestamp()
-      });
+      if (!userId) {
+        console.error("No authenticated operator ID available.");
+        return;
+      }
+
+      if (dbMode === 'firebase') {
+        // Add sensor reading
+        await addDoc(collection(db, 'users', userId, 'sensor_readings'), {
+          temperature,
+          humidity,
+          voltage,
+          deviceId,
+          status: hasAlert ? 'Alert' : 'Normal',
+          timestamp: serverTimestamp()
+        });
+      } else {
+        // Local mode write
+        const localReadings = JSON.parse(localStorage.getItem(`esp32_local_readings_${userId}`) || '[]');
+        const newReading = {
+          id: 'reading-' + Date.now() + '-' + Math.random().toString(36).substring(2, 5),
+          temperature,
+          humidity,
+          voltage,
+          deviceId,
+          status: hasAlert ? 'Alert' : 'Normal',
+          timestamp: new Date().toISOString()
+        };
+        localReadings.unshift(newReading);
+        if (localReadings.length > 150) {
+          localReadings.length = 150;
+        }
+        localStorage.setItem(`esp32_local_readings_${userId}`, JSON.stringify(localReadings));
+        
+        // Dispatch local DB event to update dashboards/charts
+        window.dispatchEvent(new Event('esp32_local_db_update'));
+      }
 
       setLastSent(now.toLocaleTimeString());
     } catch (error) {
@@ -109,21 +137,44 @@ export default function ESP32Simulator({ thresholds, userId, onAlertTriggered }:
     threshold: number,
     message: string
   ) => {
+    if (!userId) return;
     let sensorType: 'temperature' | 'humidity' | 'voltage' = 'temperature';
     if (type.startsWith('humidity')) sensorType = 'humidity';
     if (type.startsWith('voltage')) sensorType = 'voltage';
 
     try {
-      await addDoc(collection(db, 'alerts'), {
-        userId: userId || 'anonymous',
-        type,
-        sensorType,
-        value,
-        threshold,
-        read: false,
-        message,
-        timestamp: serverTimestamp()
-      });
+      if (dbMode === 'firebase') {
+        await addDoc(collection(db, 'users', userId, 'alerts'), {
+          type,
+          sensorType,
+          value,
+          threshold,
+          read: false,
+          message,
+          timestamp: serverTimestamp()
+        });
+      } else {
+        const localAlerts = JSON.parse(localStorage.getItem(`esp32_local_alerts_${userId}`) || '[]');
+        const newAlert = {
+          id: 'alert-' + Date.now() + '-' + Math.random().toString(36).substring(2, 5),
+          userId,
+          type,
+          sensorType,
+          value,
+          threshold,
+          read: false,
+          message,
+          timestamp: new Date().toISOString()
+        };
+        localAlerts.unshift(newAlert);
+        if (localAlerts.length > 150) {
+          localAlerts.length = 150;
+        }
+        localStorage.setItem(`esp32_local_alerts_${userId}`, JSON.stringify(localAlerts));
+        
+        // Dispatch local DB event
+        window.dispatchEvent(new Event('esp32_local_db_update'));
+      }
       onAlertTriggered(message, sensorType);
     } catch (e) {
       console.error("Error triggering alert: ", e);
@@ -149,7 +200,16 @@ export default function ESP32Simulator({ thresholds, userId, onAlertTriggered }:
         Simulate an ESP32 microcontroller reading DHT11/22 & battery sensors. Sliding these inputs writes live data to your Firestore database.
       </p>
 
-      <div className="space-y-4">
+      {!userId ? (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-5 text-center my-4">
+          <AlertTriangle className="h-6 w-6 text-amber-500 mx-auto mb-2 animate-bounce" />
+          <h4 className="font-bold text-xs text-amber-600 dark:text-amber-500 uppercase tracking-wide">Operator Login Required</h4>
+          <p className="text-xs text-slate-600 dark:text-slate-400 mt-2.5 leading-relaxed">
+            Please register or sign in as a Security Operator inside the simulated viewport to connect with this virtual ESP32 node and stream live telemetry.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
         {/* Device Settings */}
         <div>
           <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">Device ID / MAC</label>
@@ -297,6 +357,7 @@ export default function ESP32Simulator({ thresholds, userId, onAlertTriggered }:
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

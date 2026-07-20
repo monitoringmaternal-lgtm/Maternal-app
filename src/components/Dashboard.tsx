@@ -25,9 +25,11 @@ import {
 
 interface DashboardProps {
   thresholds: AlertThresholds;
+  userId: string;
+  dbMode: 'firebase' | 'local';
 }
 
-export default function Dashboard({ thresholds }: DashboardProps) {
+export default function Dashboard({ thresholds, userId, dbMode }: DashboardProps) {
   const [readings, setReadings] = useState<SensorReading[]>([]);
   const [latest, setLatest] = useState<SensorReading | null>(null);
   const [chartMetric, setChartMetric] = useState<'temperature' | 'humidity' | 'voltage'>('temperature');
@@ -35,37 +37,67 @@ export default function Dashboard({ thresholds }: DashboardProps) {
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
-    // Listen to Firestore for sensor readings in real-time
-    const readingsCol = collection(db, 'sensor_readings');
-    const q = query(readingsCol, orderBy('timestamp', 'desc'), limit(recordLimit));
+    if (!userId) return;
+    
+    if (dbMode === 'firebase') {
+      // Listen to Firestore for sensor readings in real-time
+      const readingsCol = collection(db, 'users', userId, 'sensor_readings');
+      const q = query(readingsCol, orderBy('timestamp', 'desc'), limit(recordLimit));
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data: SensorReading[] = [];
-      snapshot.forEach((doc) => {
-        const item = doc.data();
-        data.push({
-          id: doc.id,
-          temperature: item.temperature,
-          humidity: item.humidity,
-          voltage: item.voltage,
-          deviceId: item.deviceId || 'ESP32',
-          status: item.status || 'Normal',
-          timestamp: item.timestamp ? item.timestamp.toDate() : new Date()
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const data: SensorReading[] = [];
+        snapshot.forEach((doc) => {
+          const item = doc.data();
+          data.push({
+            id: doc.id,
+            temperature: item.temperature,
+            humidity: item.humidity,
+            voltage: item.voltage,
+            deviceId: item.deviceId || 'ESP32',
+            status: item.status || 'Normal',
+            timestamp: item.timestamp ? item.timestamp.toDate() : new Date()
+          });
         });
+
+        setReadings(data);
+        if (data.length > 0) {
+          setLatest(data[0]);
+        }
+        setLoading(false);
+      }, (error) => {
+        console.error("Firestore real-time subscription error: ", error);
+        setLoading(false);
       });
 
-      setReadings(data);
-      if (data.length > 0) {
-        setLatest(data[0]);
-      }
-      setLoading(false);
-    }, (error) => {
-      console.error("Firestore real-time subscription error: ", error);
-      setLoading(false);
-    });
+      return () => unsubscribe();
+    } else {
+      // Local Database listener
+      const loadLocalReadings = () => {
+        const localReadings = JSON.parse(localStorage.getItem(`esp32_local_readings_${userId}`) || '[]');
+        const formatted = localReadings.map((r: any) => ({
+          ...r,
+          timestamp: r.timestamp ? new Date(r.timestamp) : new Date()
+        })).slice(0, recordLimit);
 
-    return () => unsubscribe();
-  }, [recordLimit]);
+        setReadings(formatted);
+        if (formatted.length > 0) {
+          setLatest(formatted[0]);
+        } else {
+          setLatest(null);
+        }
+        setLoading(false);
+      };
+
+      // Load initially
+      loadLocalReadings();
+
+      // Setup window event listener for real-time reactivity
+      window.addEventListener('esp32_local_db_update', loadLocalReadings);
+      return () => {
+        window.removeEventListener('esp32_local_db_update', loadLocalReadings);
+      };
+    }
+  }, [recordLimit, userId, dbMode]);
 
   // Check if current values violate limits
   const isTempAlert = latest ? (latest.temperature > thresholds.tempMax || latest.temperature < thresholds.tempMin) : false;

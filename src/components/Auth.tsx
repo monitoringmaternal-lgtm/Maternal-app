@@ -3,17 +3,21 @@ import { auth, db } from '../firebase';
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  signInAnonymously,
-  sendPasswordResetEmail
+  sendPasswordResetEmail,
+  GoogleAuthProvider,
+  signInWithPopup
 } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
-import { Shield, Key, Mail, User, AlertCircle, ArrowRight, Sparkles, LogIn } from 'lucide-react';
+import { Shield, Key, Mail, User, AlertCircle, ArrowRight, Sparkles, LogIn, Database, Cpu } from 'lucide-react';
+import { UserProfile } from '../types';
 
 interface AuthProps {
   onSuccess: (uid: string) => void;
+  dbMode: 'firebase' | 'local';
+  setDbMode: (mode: 'firebase' | 'local') => void;
 }
 
-export default function Auth({ onSuccess }: AuthProps) {
+export default function Auth({ onSuccess, dbMode, setDbMode }: AuthProps) {
   const [isSignUp, setIsSignUp] = useState<boolean>(false);
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
@@ -46,7 +50,6 @@ export default function Auth({ onSuccess }: AuthProps) {
   };
 
   const handleSubmit = async (e: FormEvent) => {
-
     e.preventDefault();
     setError('');
     setInfoMessage('');
@@ -59,19 +62,73 @@ export default function Auth({ onSuccess }: AuthProps) {
     }
 
     try {
-      if (isSignUp) {
-        if (!username) {
-          setError('Please provide an operator name');
-          setLoading(false);
-          return;
+      if (dbMode === 'firebase') {
+        if (isSignUp) {
+          if (!username) {
+            setError('Please provide an operator name');
+            setLoading(false);
+            return;
+          }
+          const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+          await initUserProfile(userCredential.user.uid, email, username);
+          onSuccess(userCredential.user.uid);
+        } else {
+          const userCredential = await signInWithEmailAndPassword(auth, email, password);
+          await initUserProfile(userCredential.user.uid, email, userCredential.user.displayName || 'ESP32 Operator');
+          onSuccess(userCredential.user.uid);
         }
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        await initUserProfile(userCredential.user.uid, email, username);
-        onSuccess(userCredential.user.uid);
       } else {
-        const userCredential = await signInWithEmailAndPassword(auth, email, password);
-        await initUserProfile(userCredential.user.uid, email, userCredential.user.displayName || 'ESP32 Operator');
-        onSuccess(userCredential.user.uid);
+        // LOCAL DATABASE MODE
+        const localUsers = JSON.parse(localStorage.getItem('esp32_local_users') || '[]');
+        
+        if (isSignUp) {
+          if (!username) {
+            setError('Please provide an operator name');
+            setLoading(false);
+            return;
+          }
+          if (localUsers.some((u: any) => u.email === email)) {
+            setError('Email is already registered in local database');
+            setLoading(false);
+            return;
+          }
+          
+          const uid = 'local-' + Math.random().toString(36).substring(2, 9);
+          const newUser = { uid, email, username, password };
+          localUsers.push(newUser);
+          localStorage.setItem('esp32_local_users', JSON.stringify(localUsers));
+
+          const defaultProfile: UserProfile = {
+            uid,
+            email,
+            username,
+            alertSettings: {
+              tempMax: 38.0,
+              tempMin: 15.0,
+              humidityMax: 75.0,
+              humidityMin: 25.0,
+              voltageMin: 3.3,
+              voltageMax: 4.7
+            },
+            darkMode: false
+          };
+          localStorage.setItem(`esp32_local_profile_${uid}`, JSON.stringify(defaultProfile));
+          localStorage.setItem('esp32_local_session', JSON.stringify({ uid, email }));
+          
+          window.dispatchEvent(new Event('esp32_local_db_update'));
+          onSuccess(uid);
+        } else {
+          const matchedUser = localUsers.find((u: any) => u.email === email && u.password === password);
+          if (!matchedUser) {
+            setError('Invalid local operator email or password. Feel free to use the "Sandbox Quick Login" below to bypass registration!');
+            setLoading(false);
+            return;
+          }
+          
+          localStorage.setItem('esp32_local_session', JSON.stringify({ uid: matchedUser.uid, email: matchedUser.email }));
+          window.dispatchEvent(new Event('esp32_local_db_update'));
+          onSuccess(matchedUser.uid);
+        }
       }
     } catch (err: any) {
       console.error(err);
@@ -84,6 +141,8 @@ export default function Auth({ onSuccess }: AuthProps) {
         msg = 'Invalid credentials provided';
       } else if (err.code === 'auth/weak-password') {
         msg = 'Password should be at least 6 characters';
+      } else if (err.code === 'auth/operation-not-allowed') {
+        msg = 'Email/Password sign-in is disabled on this Firebase project. Please enable Email/Password provider in the Firebase Console (Authentication > Sign-in method), or use the "Local Sandbox" option above for instant zero-config login.';
       }
       setError(msg);
     } finally {
@@ -91,24 +150,32 @@ export default function Auth({ onSuccess }: AuthProps) {
     }
   };
 
-  const handleDemoLogin = async () => {
+  const handleGoogleSignIn = async () => {
     setError('');
     setInfoMessage('');
     setLoading(true);
     try {
-      // Sign in anonymously for easy, seamless evaluation without signups
-      const userCredential = await signInAnonymously(auth);
-      await initUserProfile(userCredential.user.uid, 'demo@esp32-telemetry.io', 'Demo Operator');
+      const provider = new GoogleAuthProvider();
+      const userCredential = await signInWithPopup(auth, provider);
+      await initUserProfile(
+        userCredential.user.uid,
+        userCredential.user.email || '',
+        userCredential.user.displayName || 'ESP32 Operator'
+      );
       onSuccess(userCredential.user.uid);
     } catch (err: any) {
       console.error(err);
-      setError('Demo Sign-In failed: ' + err.message);
+      setError('Google Sign-In failed: ' + err.message + '. If Firebase setup is incomplete, please switch to "Local Sandbox" at the top.');
     } finally {
       setLoading(false);
     }
   };
 
   const handleForgotPassword = async () => {
+    if (dbMode === 'local') {
+      setInfoMessage('Local database mode does not require password reset. Simply use the quick sandbox bypass button!');
+      return;
+    }
     if (!email) {
       setError('Please enter your email to request a reset link');
       return;
@@ -124,10 +191,48 @@ export default function Auth({ onSuccess }: AuthProps) {
     }
   };
 
+  const handleQuickSandboxLogin = () => {
+    setError('');
+    setInfoMessage('');
+    setLoading(true);
+    try {
+      const uid = 'local-operator';
+      const email = 'operator@local.io';
+      const username = 'Sandbox Operator';
+      
+      const defaultProfile = {
+        uid,
+        email,
+        username,
+        alertSettings: {
+          tempMax: 38.0,
+          tempMin: 15.0,
+          humidityMax: 75.0,
+          humidityMin: 25.0,
+          voltageMin: 3.3,
+          voltageMax: 4.7
+        },
+        darkMode: false
+      };
+      
+      if (!localStorage.getItem(`esp32_local_profile_${uid}`)) {
+        localStorage.setItem(`esp32_local_profile_${uid}`, JSON.stringify(defaultProfile));
+      }
+      
+      localStorage.setItem('esp32_local_session', JSON.stringify({ uid, email }));
+      window.dispatchEvent(new Event('esp32_local_db_update'));
+      onSuccess(uid);
+    } catch (err: any) {
+      setError('Sandbox login failed: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="w-full max-w-md mx-auto bg-white dark:bg-[#1e293b] border border-slate-200 dark:border-slate-700/50 rounded-3xl p-6 sm:p-8 shadow-xl">
       {/* Header */}
-      <div className="text-center mb-8">
+      <div className="text-center mb-6">
         <div className="inline-flex items-center justify-center h-14 w-14 bg-cyan-500/10 rounded-2xl mb-4 text-cyan-500">
           <Shield className="h-7 w-7" />
         </div>
@@ -137,6 +242,42 @@ export default function Auth({ onSuccess }: AuthProps) {
         <p className="text-sm text-slate-500 dark:text-slate-400 mt-1.5">
           Access the real-time ESP32 telemetric network dashboard.
         </p>
+      </div>
+
+      {/* Connection Mode Tabs */}
+      <div className="grid grid-cols-2 p-1 bg-slate-50 dark:bg-[#0f172a] rounded-xl mb-6 border border-slate-200/50 dark:border-slate-800/80">
+        <button
+          type="button"
+          onClick={() => {
+            setDbMode('firebase');
+            setError('');
+            setInfoMessage('');
+          }}
+          className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+            dbMode === 'firebase'
+              ? 'bg-white dark:bg-[#1e293b] text-cyan-500 dark:text-cyan-400 shadow-sm'
+              : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+          }`}
+        >
+          <Database className="h-3.5 w-3.5" />
+          <span>Firebase Cloud</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setDbMode('local');
+            setError('');
+            setInfoMessage('');
+          }}
+          className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+            dbMode === 'local'
+              ? 'bg-white dark:bg-[#1e293b] text-cyan-500 dark:text-cyan-400 shadow-sm'
+              : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+          }`}
+        >
+          <Cpu className="h-3.5 w-3.5" />
+          <span>Local Sandbox</span>
+        </button>
       </div>
 
       {error && (
@@ -178,7 +319,7 @@ export default function Auth({ onSuccess }: AuthProps) {
             <input
               id="auth-email"
               type="email"
-              placeholder="operator@system.io"
+              placeholder={dbMode === 'firebase' ? 'operator@system.io' : 'operator@local.io'}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full text-sm pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0f172a] text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-shadow"
@@ -229,22 +370,44 @@ export default function Auth({ onSuccess }: AuthProps) {
         </button>
       </form>
 
-      <div className="relative flex py-5 items-center">
-        <div className="flex-grow border-t border-slate-100 dark:border-slate-800"></div>
-        <span className="flex-shrink mx-4 text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase">Or</span>
-        <div className="flex-grow border-t border-slate-100 dark:border-slate-800"></div>
-      </div>
+      {/* If in local mode, show Quick Access Login */}
+      {dbMode === 'local' ? (
+        <div className="mt-4">
+          <div className="relative flex py-3 items-center">
+            <div className="flex-grow border-t border-slate-100 dark:border-slate-800"></div>
+            <span className="flex-shrink mx-3 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase">Or bypass credentials</span>
+            <div className="flex-grow border-t border-slate-100 dark:border-slate-800"></div>
+          </div>
+          <button
+            id="sandbox-quick-login-btn"
+            onClick={handleQuickSandboxLogin}
+            disabled={loading}
+            className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-bold py-2.5 px-4 rounded-xl transition-all shadow-md shadow-amber-500/10 text-xs uppercase tracking-wider"
+          >
+            <Cpu className="h-4 w-4" />
+            <span>⚡ Direct Sandbox Quick Login</span>
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="relative flex py-4 items-center">
+            <div className="flex-grow border-t border-slate-100 dark:border-slate-800"></div>
+            <span className="flex-shrink mx-4 text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase">Or</span>
+            <div className="flex-grow border-t border-slate-100 dark:border-slate-800"></div>
+          </div>
 
-      {/* One click Demo Account login option */}
-      <button
-        id="demo-login-btn"
-        onClick={handleDemoLogin}
-        disabled={loading}
-        className="w-full flex items-center justify-center gap-2 border border-dashed border-cyan-500/30 dark:border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/10 dark:bg-[#0f172a] text-cyan-500 font-semibold py-2.5 px-4 rounded-xl transition-all"
-      >
-        <LogIn className="h-4 w-4" />
-        <span>One-Click Demo Operator login</span>
-      </button>
+          {/* Google Sign-In Button */}
+          <button
+            id="google-signin-btn"
+            onClick={handleGoogleSignIn}
+            disabled={loading}
+            className="w-full flex items-center justify-center gap-2 border border-slate-200 dark:border-slate-800 bg-white hover:bg-slate-50 dark:bg-[#0f172a] dark:hover:bg-slate-850 text-slate-700 dark:text-slate-200 font-semibold py-2.5 px-4 rounded-xl transition-all shadow-sm text-xs"
+          >
+            <LogIn className="h-4 w-4 text-cyan-500" />
+            <span>Sign In with Google</span>
+          </button>
+        </>
+      )}
 
       <div className="mt-6 text-center text-xs">
         <span className="text-slate-500 dark:text-slate-400">

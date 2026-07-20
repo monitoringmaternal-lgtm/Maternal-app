@@ -6,26 +6,28 @@ import { BellRing, ShieldAlert, Thermometer, Droplets, Battery, Trash2, Check, C
 
 interface AlertsListProps {
   userId: string;
+  dbMode: 'firebase' | 'local';
 }
 
-export default function AlertsList({ userId }: AlertsListProps) {
+export default function AlertsList({ userId, dbMode }: AlertsListProps) {
   const [alerts, setAlerts] = useState<SensorAlert[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
-    // Listen to real-time safety alerts matching operator ID
-    const alertsCol = collection(db, 'alerts');
-    const q = query(alertsCol, orderBy('timestamp', 'desc'), limit(50));
+    if (!userId) return;
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data: SensorAlert[] = [];
-      snapshot.forEach((doc) => {
-        const item = doc.data();
-        // Show alerts for this specific user or anonymous alerts for guests
-        if (item.userId === userId || item.userId === 'anonymous' || !userId) {
+    if (dbMode === 'firebase') {
+      // Listen to real-time safety alerts matching operator ID in subcollection
+      const alertsCol = collection(db, 'users', userId, 'alerts');
+      const q = query(alertsCol, orderBy('timestamp', 'desc'), limit(50));
+
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const data: SensorAlert[] = [];
+        snapshot.forEach((doc) => {
+          const item = doc.data();
           data.push({
             id: doc.id,
-            userId: item.userId,
+            userId,
             timestamp: item.timestamp ? item.timestamp.toDate() : new Date(),
             type: item.type,
             sensorType: item.sensorType,
@@ -34,37 +36,67 @@ export default function AlertsList({ userId }: AlertsListProps) {
             read: item.read || false,
             message: item.message || 'Threshold warning triggered'
           });
-        }
+        });
+        setAlerts(data);
+        setLoading(false);
+      }, (err) => {
+        console.error("Firestore subscription error for alerts:", err);
+        setLoading(false);
       });
-      setAlerts(data);
-      setLoading(false);
-    }, (err) => {
-      console.error("Firestore subscription error for alerts:", err);
-      setLoading(false);
-    });
 
-    return () => unsubscribe();
-  }, [userId]);
+      return () => unsubscribe();
+    } else {
+      const loadLocalAlerts = () => {
+        const localAlerts = JSON.parse(localStorage.getItem(`esp32_local_alerts_${userId}`) || '[]');
+        const formatted = localAlerts.map((a: any) => ({
+          ...a,
+          timestamp: a.timestamp ? new Date(a.timestamp) : new Date()
+        }));
+        setAlerts(formatted);
+        setLoading(false);
+      };
+
+      loadLocalAlerts();
+      window.addEventListener('esp32_local_db_update', loadLocalAlerts);
+      return () => {
+        window.removeEventListener('esp32_local_db_update', loadLocalAlerts);
+      };
+    }
+  }, [userId, dbMode]);
 
   const handleMarkAllRead = async () => {
+    if (!userId) return;
     try {
-      const batch = writeBatch(db);
-      alerts.forEach((alert) => {
-        if (!alert.read) {
-          const alertRef = doc(db, 'alerts', alert.id);
-          batch.update(alertRef, { read: true });
-        }
-      });
-      await batch.commit();
+      if (dbMode === 'firebase') {
+        const batch = writeBatch(db);
+        alerts.forEach((alert) => {
+          if (!alert.read) {
+            const alertRef = doc(db, 'users', userId, 'alerts', alert.id);
+            batch.update(alertRef, { read: true });
+          }
+        });
+        await batch.commit();
+      } else {
+        const localAlerts = JSON.parse(localStorage.getItem(`esp32_local_alerts_${userId}`) || '[]');
+        const updated = localAlerts.map((a: any) => ({ ...a, read: true }));
+        localStorage.setItem(`esp32_local_alerts_${userId}`, JSON.stringify(updated));
+        window.dispatchEvent(new Event('esp32_local_db_update'));
+      }
     } catch (e) {
       console.error("Error marking alerts as read: ", e);
     }
   };
 
   const handleClearAll = async () => {
+    if (!userId) return;
     try {
-      const promises = alerts.map((alert) => deleteDoc(doc(db, 'alerts', alert.id)));
-      await Promise.all(promises);
+      if (dbMode === 'firebase') {
+        const promises = alerts.map((alert) => deleteDoc(doc(db, 'users', userId, 'alerts', alert.id)));
+        await Promise.all(promises);
+      } else {
+        localStorage.removeItem(`esp32_local_alerts_${userId}`);
+        window.dispatchEvent(new Event('esp32_local_db_update'));
+      }
     } catch (e) {
       console.error("Error clearing alert history: ", e);
     }

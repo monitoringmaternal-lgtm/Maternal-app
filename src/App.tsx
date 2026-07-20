@@ -34,6 +34,9 @@ interface InAppToast {
 }
 
 export default function App() {
+  const [dbMode, setDbMode] = useState<'firebase' | 'local'>(() => {
+    return (localStorage.getItem('esp32_db_mode') as 'firebase' | 'local') || 'firebase';
+  });
   const [user, setUser] = useState<any>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
@@ -43,63 +46,111 @@ export default function App() {
 
   // Initialize Auth state listener
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser);
-      if (!firebaseUser) {
+    if (dbMode === 'firebase') {
+      const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+        setUser(firebaseUser);
+        if (!firebaseUser) {
+          setProfile(null);
+          setAuthLoading(false);
+        }
+      });
+      return () => unsubscribe();
+    } else {
+      // Local Database Mode: check localStorage session
+      const storedLocalUser = localStorage.getItem('esp32_local_session');
+      if (storedLocalUser) {
+        setUser(JSON.parse(storedLocalUser));
+      } else {
+        setUser(null);
         setProfile(null);
-        setAuthLoading(false);
       }
-    });
-    return () => unsubscribe();
-  }, []);
+      setAuthLoading(false);
+    }
+  }, [dbMode]);
 
-  // Listen to Firestore User Profile in real-time when authenticated
+  // Listen to User Profile (Firestore in Cloud mode, localStorage in Local mode)
   useEffect(() => {
     if (!user) return;
 
-    const userDocRef = doc(db, 'users', user.uid);
-    const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setProfile({
-          uid: user.uid,
-          email: data.email || user.email || 'anonymous@esp32.io',
-          username: data.username || 'ESP32 Operator',
-          alertSettings: data.alertSettings || {
-            tempMax: 38.0,
-            tempMin: 15.0,
-            humidityMax: 75.0,
-            humidityMin: 25.0,
-            voltageMin: 3.3,
-            voltageMax: 4.7
-          },
-          darkMode: data.darkMode || false
-        });
-      } else {
-        // Fallback profile if Firestore is still bootstrapping
-        setProfile({
-          uid: user.uid,
-          email: user.email || 'anonymous@esp32.io',
-          username: 'ESP32 Operator',
-          alertSettings: {
-            tempMax: 38.0,
-            tempMin: 15.0,
-            humidityMax: 75.0,
-            humidityMin: 25.0,
-            voltageMin: 3.3,
-            voltageMax: 4.7
-          },
-          darkMode: false
-        });
-      }
-      setAuthLoading(false);
-    }, (error) => {
-      console.error("Error listening to user profile:", error);
-      setAuthLoading(false);
-    });
+    if (dbMode === 'firebase') {
+      const userDocRef = doc(db, 'users', user.uid);
+      const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          setProfile({
+            uid: user.uid,
+            email: data.email || user.email || 'operator@system.io',
+            username: data.username || 'ESP32 Operator',
+            alertSettings: data.alertSettings || {
+              tempMax: 38.0,
+              tempMin: 15.0,
+              humidityMax: 75.0,
+              humidityMin: 25.0,
+              voltageMin: 3.3,
+              voltageMax: 4.7
+            },
+            darkMode: data.darkMode || false
+          });
+        } else {
+          // Fallback profile if Firestore is still bootstrapping
+          setProfile({
+            uid: user.uid,
+            email: user.email || 'operator@system.io',
+            username: 'ESP32 Operator',
+            alertSettings: {
+              tempMax: 38.0,
+              tempMin: 15.0,
+              humidityMax: 75.0,
+              humidityMin: 25.0,
+              voltageMin: 3.3,
+              voltageMax: 4.7
+            },
+            darkMode: false
+          });
+        }
+        setAuthLoading(false);
+      }, (error) => {
+        console.error("Error listening to user profile:", error);
+        setAuthLoading(false);
+      });
 
-    return () => unsubscribe();
-  }, [user]);
+      return () => unsubscribe();
+    } else {
+      // Local mode profile loading & sync
+      const loadLocalProfile = () => {
+        const localProfileStr = localStorage.getItem(`esp32_local_profile_${user.uid}`);
+        if (localProfileStr) {
+          setProfile(JSON.parse(localProfileStr));
+        } else {
+          const defaultProfile: UserProfile = {
+            uid: user.uid,
+            email: user.email || 'operator@local.io',
+            username: 'Local Operator',
+            alertSettings: {
+              tempMax: 38.0,
+              tempMin: 15.0,
+              humidityMax: 75.0,
+              humidityMin: 25.0,
+              voltageMin: 3.3,
+              voltageMax: 4.7
+            },
+            darkMode: false
+          };
+          localStorage.setItem(`esp32_local_profile_${user.uid}`, JSON.stringify(defaultProfile));
+          setProfile(defaultProfile);
+        }
+        setAuthLoading(false);
+      };
+
+      loadLocalProfile();
+
+      // Keep in sync with local simulation/settings updates via the custom event
+      window.addEventListener('esp32_local_db_update', loadLocalProfile);
+      return () => {
+        window.removeEventListener('esp32_local_db_update', loadLocalProfile);
+      };
+    }
+  }, [user, dbMode]);
 
   // Apply dark mode class to HTML element
   useEffect(() => {
@@ -165,8 +216,15 @@ export default function App() {
   const activeThresholds = profile?.alertSettings || defaultThresholds;
 
   const handleAuthSuccess = (uid: string) => {
-    // Auth state is handled in standard listener, just safety update loading
-    setAuthLoading(true);
+    if (dbMode === 'local') {
+      const storedLocalUser = localStorage.getItem('esp32_local_session');
+      if (storedLocalUser) {
+        setUser(JSON.parse(storedLocalUser));
+      }
+    } else {
+      // Auth state is handled in standard listener, just safety update loading
+      setAuthLoading(true);
+    }
   };
 
   return (
@@ -227,9 +285,15 @@ export default function App() {
             </button>
 
             {profile && (
-              <span className="text-[11px] font-mono font-bold bg-slate-100 dark:bg-cyan-500/10 border border-slate-200 dark:border-cyan-500/20 px-3 py-1.5 rounded-xl text-slate-500 dark:text-cyan-400 flex items-center gap-1.5">
-                <span className="inline-block h-1.5 w-1.5 bg-cyan-400 rounded-full animate-pulse"></span>
-                Node Connect Active
+              <span className={`text-[11px] font-mono font-bold border px-3 py-1.5 rounded-xl flex items-center gap-1.5 ${
+                dbMode === 'firebase'
+                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+                  : 'bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400'
+              }`}>
+                <span className={`inline-block h-1.5 w-1.5 rounded-full animate-pulse ${
+                  dbMode === 'firebase' ? 'bg-emerald-400' : 'bg-amber-400'
+                }`}></span>
+                {dbMode === 'firebase' ? 'Firebase Cloud Active' : 'Local Sandbox Active'}
               </span>
             )}
           </div>
@@ -271,26 +335,34 @@ export default function App() {
                     </div>
                   ) : !user ? (
                     <div className="flex items-center justify-center h-full py-6">
-                      <Auth onSuccess={handleAuthSuccess} />
+                      <Auth
+                        onSuccess={handleAuthSuccess}
+                        dbMode={dbMode}
+                        setDbMode={(mode) => {
+                          setDbMode(mode);
+                          localStorage.setItem('esp32_db_mode', mode);
+                        }}
+                      />
                     </div>
                   ) : (
                     <>
                       {/* Sub-Views */}
                       {activeTab === 'dashboard' && profile && (
-                        <Dashboard thresholds={activeThresholds} />
+                        <Dashboard thresholds={activeThresholds} userId={user.uid} dbMode={dbMode} />
                       )}
                       
                       {activeTab === 'alerts' && (
-                        <AlertsList userId={user.uid} />
+                        <AlertsList userId={user.uid} dbMode={dbMode} />
                       )}
                       
                       {activeTab === 'export' && (
-                        <ExportLogs />
+                        <ExportLogs userId={user.uid} dbMode={dbMode} />
                       )}
                       
                       {activeTab === 'thresholds' && profile && (
                         <AlertSettings
                           userId={user.uid}
+                          dbMode={dbMode}
                           currentThresholds={activeThresholds}
                           onUpdate={(newThresholds) => {
                             setProfile({
@@ -304,8 +376,13 @@ export default function App() {
                       {activeTab === 'profile' && profile && (
                         <Profile
                           profile={profile}
+                          dbMode={dbMode}
                           onProfileUpdate={(updatedProfile) => {
                             setProfile(updatedProfile);
+                          }}
+                          onLogout={() => {
+                            setUser(null);
+                            setProfile(null);
                           }}
                         />
                       )}
@@ -391,6 +468,7 @@ export default function App() {
             <ESP32Simulator
               thresholds={activeThresholds}
               userId={user?.uid}
+              dbMode={dbMode}
               onAlertTriggered={(message, type) => {
                 addToast(message, type);
               }}
