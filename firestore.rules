@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // User profiles can only be accessed by the owner
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Sensor readings can be read by anyone (to display on the public/private dashboard)
+    // and written by anyone (simulating an unauthenticated ESP32 device)
+    match /sensor_readings/{document} {
+      allow read, write: if true;
+    }
+    
+    // Alerts can be read/written to support alert notifications
+    match /alerts/{document} {
+      allow read, write: if true;
+    }
+  }
+}

@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Custom hardware-accelerated animations for real-time sensor alerts */
+@keyframes slide-down {
+  from {
+    transform: translate(-50%, -1.5rem);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-down {
+  animation: slide-down 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+/* Custom styles for range slider track background in dark mode */
+input[type="range"]::-webkit-slider-runnable-track {
+  border-radius: 9999px;
+}

@@ -1,0 +1,6 @@
+{
+  "name": "ESP32 Real-Time Monitor",
+  "description": "A real-time mobile-friendly dashboard for monitoring ESP32 sensor telemetry, featuring historical charts, CSV export, threshold-crossing alert notifications, dark mode, and secure Firebase authentication.",
+  "requestFramePermissions": ["notifications"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
